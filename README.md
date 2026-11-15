@@ -1,182 +1,72 @@
 # Agentic Lesson Generator
 
-A small Python application that uses LangGraph to generate a beginner-friendly lesson and iteratively review it with an LLM. The generator and evaluator use the same chat model configured through OpenRouter.
+This project uses a LangGraph workflow with two LLM-powered agents to create and improve a beginner-friendly lesson for a specified topic and audience.
 
-## What it does
-
-The application starts with a topic and a target audience, asks the model to write a lesson, and then evaluates that draft against a rubric. When the draft is not approved, the evaluator's feedback is added to the shared workflow state and the generator is asked to revise its lesson.
-
-The example input in `Assessment.py` is:
-
-- **Topic:** RAG (Retrieval-Augmented Generation)
-- **Audience:** A 12th-grade graduate in India with a non-English-medium background who is starting an AI career
-
-The script prints the final draft, the number of generation attempts, and the most recent evaluator feedback.
-
-## Agentic workflow
-
-The workflow is implemented as a LangGraph state graph with two nodes and a conditional loop:
+## Workflow
 
 ```text
-START
+Start
   |
   v
-Generator -- creates or revises a lesson
-  |
-  v
-Evaluator -- checks the draft against the rubric
-  |
-  +-- approved or attempt limit reached --> END
-  |
-  +-- not approved -----------------------> Generator
+Generator --> Evaluator
+                 |
+          +------+------+
+          |             |
+       Approved     Not approved
+          |             |
+          v             v
+         End        Generator
+                       (revise)
 ```
 
-### Shared state
+The workflow repeats generation and evaluation until the lesson is approved or the generation limit is reached.
 
-The `LessonState` typed dictionary in `Assessment.py` carries information between nodes:
+### 1. Generator
 
-| Field | Purpose |
+The generator creates a lesson using the topic and target audience in the workflow state. Its prompt asks for:
+
+- A relatable real-world analogy
+- Simple English and short sentences
+- An explanation of what the topic is, why it matters, and how it works, step by step
+
+If the evaluator previously returned feedback, the generator includes it in the next prompt and revises the lesson accordingly. Every new draft increments the iteration count.
+
+### 2. Evaluator
+
+The evaluator reviews the latest draft against four criteria:
+
+1. **Accuracy:** Is the explanation technically correct and on topic?
+2. **Analogy:** Does it begin with a clear, relatable analogy?
+3. **Simplicity:** Is the language understandable for the intended audience?
+4. **Structure:** Does it explain what, why, and how?
+
+It returns a pass status and feedback. The workflow recognizes approval when the response contains `PASSED: True` or `PASSED: TRUE`; otherwise, it routes the feedback back to the generator.
+
+### 3. Conditional routing and iteration limit
+
+After each evaluation, the router checks the pass status and iteration count:
+
+- If the evaluator approves the lesson, the workflow ends.
+- If the lesson is not approved and fewer than four drafts have been generated, the workflow returns to the generator.
+- If four drafts have been generated, the workflow ends even if the latest draft was not approved.
+
+Each draft is evaluated before the routing decision. Therefore, a run can make up to four generation calls and four evaluation calls.
+
+## State passed between agents
+
+The graph shares these values between its nodes:
+
+| State field | Role in the workflow |
 |---|---|
-| `topic` | Subject the lesson should explain. |
-| `target_audience` | Reader profile used to tune the lesson's language and examples. |
-| `draft` | Latest lesson produced by the generator. |
-| `evaluation_feedback` | Latest review response or revision instruction. |
+| `topic` | The subject the lesson should teach. |
+| `target_audience` | The intended reader, used to guide the lesson's language and examples. |
+| `draft` | The latest lesson created by the generator. |
+| `evaluation_feedback` | The latest evaluator response, used to guide a revision. |
 | `passed` | Whether the evaluator approved the current draft. |
-| `iteration_count` | Number of lesson drafts generated so far. |
+| `iteration_count` | How many lesson drafts have been generated. |
 
-### Nodes and transitions
+The initial state supplies the topic and audience, starts with an empty draft and feedback, sets `passed` to false, and sets the iteration count to zero. The example currently uses RAG (Retrieval-Augmented Generation) as its topic.
 
-1. **Generator (`generate_node`)** builds a prompt asking for a beginner-friendly lesson. It requests a relatable analogy, simple English, and a step-by-step explanation of what the topic is, why it matters, and how it works. If feedback exists in the state, that feedback is included in the next prompt. Each generated draft increments `iteration_count`.
-2. **Evaluator (`evaluate_node`)** asks the model to assess the draft on four criteria:
-   - **Accuracy:** Is the explanation technically correct and on topic?
-   - **Analogy:** Does it begin with a clear, relatable real-world analogy?
-   - **Simplicity:** Is the vocabulary accessible to the intended audience?
-   - **Structure:** Does it explain what, why, and how?
-3. **Router (`should_continue`)** ends the workflow if `passed` is true or the iteration count is greater than 3. Otherwise, it routes back to the generator.
+## Result
 
-### Current retry behavior
-
-The current implementation has a special first-review behavior: after asking the model to evaluate the first draft, it discards that review result, sets `passed` to false, and supplies a fixed instruction to simplify the English. On later attempts, the evaluator's model response is used to determine approval. The workflow can generate up to four drafts; if the fourth draft is still not approved, the workflow ends anyway. The printed heading says “FINAL APPROVED LESSON” even when the final draft may not have passed the rubric.
-
-## Requirements
-
-- Python 3.10 or newer
-- An OpenRouter API key
-- Access to the model configured in `Assessment.py` (`baidu/ernie-5.5-flash-preview:free`) through your OpenRouter account
-
-Python packages are listed in `requirements.txt`:
-
-- `langchain-core` for messages and shared LangChain types
-- `langchain-openai` for the OpenAI-compatible chat client
-- `langgraph` for defining and running the state graph
-
-## Setup
-
-Commands below assume the repository layout is:
-
-```text
-assessment/
-├── .venv/                 # Python virtual environment (created below)
-└── scaler/
-    ├── Assessment.py
-    ├── README.md
-    └── requirements.txt
-```
-
-From the project root (`assessment`), create a virtual environment and install the requirements:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r scaler/requirements.txt
-```
-
-Confirm that the interpreter and package imports come from the virtual environment:
-
-```bash
-which python
-python -c "import langchain_core, langchain_openai, langgraph; print('Dependencies are installed')"
-```
-
-The `which python` output should point to `assessment/.venv/bin/python`.
-
-> **If your virtual environment already exists:** use its interpreter explicitly, for example `./.venv/bin/python -m pip install -r scaler/requirements.txt` from the project root. If the environment was moved from another folder, its activation scripts may still reference the old path. Recreate it in its current location, or continue to invoke its Python executable directly.
-
-## Configure OpenRouter
-
-The application reads `OPENROUTER_API_KEY` and `OPENROUTER_BASE_URL` from the process environment. Set them in the same terminal where you run the script:
-
-```bash
-export OPENROUTER_API_KEY="your-openrouter-api-key"
-export OPENROUTER_BASE_URL="https://openrouter.ai/api/v1"
-```
-
-Keep the API key private. Do not commit it to source control or paste it into the README. The model name is set in `Assessment.py`; change it there if you want to use another model available to your OpenRouter account.
-
-## Run
-
-With the virtual environment activated, run from the project root:
-
-```bash
-python scaler/Assessment.py
-```
-
-Or, without activating the virtual environment:
-
-```bash
-.venv/bin/python scaler/Assessment.py
-```
-
-If you are already in the `scaler` directory, the equivalent commands are:
-
-```bash
-../.venv/bin/python Assessment.py
-```
-
-The run makes multiple model requests: one to generate each draft and one to evaluate it. The number of requests depends on how quickly the evaluator approves the lesson; the workflow may stop at the four-draft limit.
-
-## Customize the lesson
-
-To change the subject or audience, edit the `initial_state` dictionary near the bottom of `Assessment.py`:
-
-```python
-initial_state = {
-    "topic": "RAG (Retrieval-Augmented Generation)",
-    "target_audience": "12th-grade graduate in India with non-English medium background starting an AI career",
-    "draft": "",
-    "evaluation_feedback": "",
-    "passed": False,
-    "iteration_count": 0
-}
-```
-
-Set a new value for `topic` and describe the intended reader in `target_audience`. The remaining fields initialize the graph and should normally start empty or false, with `iteration_count` set to zero.
-
-You can also customize the prompts inside `generate_node` and `evaluate_node`, the evaluator rubric, the special first-review instruction, or the retry condition in `should_continue`.
-
-## Troubleshooting
-
-### `ModuleNotFoundError: No module named 'langchain_core'`
-
-The script is being run with a Python interpreter that does not have the project dependencies installed. Activate the environment and install the requirements, or use that environment's Python explicitly:
-
-```bash
-source .venv/bin/activate
-python -m pip install -r scaler/requirements.txt
-python scaler/Assessment.py
-```
-
-Check `which python` before running. A prompt that visually shows an environment name does not guarantee that the shell resolved `python` or `pip` to that environment.
-
-### `can't open file .../scaler.py`
-
-The script's filename is `Assessment.py` (capital `A`) and it is inside the `scaler` directory. From the project root, run:
-
-```bash
-python scaler/Assessment.py
-```
-
-### OpenRouter authentication or model errors
-
-Check that `OPENROUTER_API_KEY` is set in the current terminal and that the key is valid. Confirm that the model identifier in `Assessment.py` is available to your account and that `OPENROUTER_BASE_URL` is set to `https://openrouter.ai/api/v1`.
+When the workflow finishes, the program prints the latest lesson, the number of drafts generated, and the latest evaluator feedback. If the iteration limit is reached before approval, the returned lesson is the latest draft, but it may not have passed the evaluator's rubric.
