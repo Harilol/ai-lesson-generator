@@ -67,13 +67,9 @@ def evaluate_node(state: LessonState):
     result_text = ""
     
     response = llm.invoke([HumanMessage(content=eval_prompt)])
-    
-    if state['iteration_count'] == 1:
-        passed = False
-        result_text = 'Too advanced english. make it simpler so that everyone can understand.'
-    else:
-        result_text = response.content
-        passed = "PASSED: True" in result_text or "PASSED: TRUE" in result_text
+    result_text = response.content
+
+    passed = "PASSED: True" in result_text or "PASSED: TRUE" in result_text
     
     return {
         "evaluation_feedback": result_text,
